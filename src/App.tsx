@@ -127,8 +127,10 @@ export default function App() {
 
   // Scoring / metrics
   const [startTime, setStartTime] = useState<number | null>(null);
+  const startTimeRef = useRef<number | null>(null); // mirrors startTime but always fresh in closures
   const [timeLeft, setTimeLeft] = useState<number>(30);
   const [errorsCount, setErrorsCount] = useState<number>(0);
+  const errorsCountRef = useRef<number>(0); // mirrors errorsCount but always fresh in closures
   const [history, setHistory] = useState<ScoreEntry[]>([]);
 
   // Sound and physical vibrations (Default OFF / Muted as per specs)
@@ -187,7 +189,9 @@ export default function App() {
     setStatus('idle');
     setTypedText('');
     setErrorsCount(0);
+    errorsCountRef.current = 0;
     setStartTime(null);
+    startTimeRef.current = null;
     setTimeLeft(targetDuration);
 
     // Reset ghost typing loop on manually clicking reset
@@ -250,6 +254,7 @@ export default function App() {
     // Set test start parameters
     const currentStartTime = Date.now();
     setStartTime(currentStartTime);
+    startTimeRef.current = currentStartTime;
     setStatus('running');
 
     let nextText = '';
@@ -272,6 +277,7 @@ export default function App() {
         setLastTypedChar(charToType);
         typewriterSound.playErrorStrike();
         setErrorsCount(1);
+        errorsCountRef.current = 1;
         addFloat('*smudge!*', true);
         if (!prefersReduced) {
           setJitter(true);
@@ -444,6 +450,7 @@ export default function App() {
       setStatus('running');
       currentStartTime = Date.now();
       setStartTime(currentStartTime);
+      startTimeRef.current = currentStartTime;
     }
 
     // Analyze what happened on the current page
@@ -470,7 +477,7 @@ export default function App() {
         addFloat(isSpace ? '*whoosh!*' : `*clack!*`);
       } else {
         typewriterSound.playErrorStrike();
-        setErrorsCount(prev => prev + 1);
+        setErrorsCount(prev => { errorsCountRef.current = prev + 1; return prev + 1; });
         addFloat('*smudge!*', true);
 
         // Shake typewriter carriage on mistake
@@ -641,26 +648,39 @@ export default function App() {
   useEffect(() => {
     if (status !== 'running') return;
 
+    // Use a flag to prevent handleTestComplete from being called multiple times
+    // if the 100ms interval fires twice before clearInterval takes effect.
+    let completed = false;
+
     const timer = setInterval(() => {
-      const elapsed = Math.floor((Date.now() - (startTime ?? Date.now())) / 1000);
+      const now = Date.now();
+      const elapsed = (now - (startTimeRef.current ?? now)) / 1000;
       const remaining = Math.max(0, duration - elapsed);
 
-      setTimeLeft(remaining);
+      setTimeLeft(Math.ceil(remaining));
 
       // Warning bell chime 5 seconds before session expiration
-      if (remaining === 5) {
+      if (remaining <= 5 && remaining > 4.9) {
         typewriterSound.playBell();
       }
 
-      if (remaining === 0) {
+      if (remaining <= 0 && !completed) {
+        completed = true;
         clearInterval(timer);
-        const allPages = [...completedPagesTypedText, typedText];
-        handleTestComplete(allPages, startTime, status);
+        // Read latest state via functional updater pattern to avoid stale closure
+        setCompletedPagesTypedText(latestCompleted => {
+          setTypedText(latestTyped => {
+            const allPages = [...latestCompleted, latestTyped];
+            handleTestComplete(allPages, startTimeRef.current, 'running');
+            return latestTyped;
+          });
+          return latestCompleted;
+        });
       }
     }, 100);
 
     return () => clearInterval(timer);
-  }, [status, startTime, duration, typedText, completedPagesTypedText]);
+  }, [status, duration]);
 
   // Complete the test session cumulatively across all pages
   const handleTestComplete = (allPagesTypedText: string[], currentStartTime: number | null, currentStatus: string) => {
@@ -689,9 +709,13 @@ export default function App() {
     });
 
     const elapsedSeconds = currentStartTime ? (Date.now() - currentStartTime) / 1000 : duration;
-    const elapsedMinutes = Math.max(1, elapsedSeconds) / 60;
+    // Use actual elapsed time (minimum 1 second to avoid divide-by-zero on instant completions).
+    // Do NOT clamp to 60s — that was causing WPM to be massively under-reported for short tests.
+    const elapsedMinutes = Math.max(elapsedSeconds, 1) / 60;
 
+    // Net WPM: only counts correctly-typed characters, normalised to 5-char "words"
     const finalWpm = Math.round((totalCorrect / 5) / elapsedMinutes);
+    // Raw WPM: total characters typed (correct + incorrect), same normalisation
     const rawWpm = Math.round((totalTypedLength / 5) / elapsedMinutes);
     const finalAccuracy = totalTypedLength > 0 ? Math.round((totalCorrect / totalTypedLength) * 100) : 0;
 
@@ -700,7 +724,7 @@ export default function App() {
       date: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }) + ' - ' + new Date().toLocaleDateString([], { month: 'short', day: 'numeric' }),
       wpm: finalWpm,
       accuracy: finalAccuracy,
-      errors: errorsCount,
+      errors: errorsCountRef.current,
       duration: duration,
       rawWpm: rawWpm,
     };
