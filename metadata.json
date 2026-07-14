@@ -1,0 +1,6 @@
+{
+  "name": "Ledger",
+  "description": "A typewriter-ribbon typing speed test designed with physical tactile textures, ink stamp mechanics, and classic ledger styling.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
